@@ -1,0 +1,6 @@
+.DS_Store
+.claude/
+*.tif
+*.lif
+__pycache__/
+*.pyc
