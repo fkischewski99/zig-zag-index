@@ -4,3 +4,4 @@
 *.lif
 __pycache__/
 *.pyc
+.mcp.json

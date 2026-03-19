@@ -1,12 +1,11 @@
 """
 zigzag_pathfind.py
-Findet den Membranpfad zwischen Punktpaaren.
+Findet den Membranpfad zwischen Punktpaaren via Dijkstra.
 
-Einfacher Ansatz der FUNKTIONIERT:
-  - Rohbild-Intensitaet direkt als Kostenbasis (hell=billig, dunkel=teuer)
-  - Exponentielle Kostenfunktion (Verhaeltnis 3 Mio : 1)
-  - Proximity-Kosten halten den Pfad auf der RICHTIGEN Membran
-  - Kein Meijering, kein Skeleton, kein Threshold
+Aufruf:
+  python zigzag_pathfind.py <image> <coords> <results> <paths> <px_w> <px_h>
+
+Abhaengigkeiten: pip install numpy scikit-image
 """
 
 import sys
@@ -117,7 +116,7 @@ def main():
             dy = (end[0] - start[0]) * pixel_height
             euclid = float(np.sqrt(dx**2 + dy**2))
 
-            zigzag = euclid / path_length if path_length > 0 else 0.0
+            zigzag = path_length / euclid if euclid > 0 else 0.0
 
             results.append((p + 1, euclid, path_length, zigzag))
             print(f"  Laenge={path_length:.2f}, Euklid={euclid:.2f}, ZZ={zigzag:.4f}", flush=True)
