@@ -6,31 +6,23 @@
 // Dijkstra-Algorithmus auf Ridge-gefiltertem Bild findet den optimalen
 // Pfad entlang der hellsten Membranstrukturen.
 //
-// Zickzack-Index = Gerade Strecke / Tatsaechliche Membranlaenge
-//   1.0 = gerade Membran, <1.0 = Zickzackmuster
+// Zickzack-Index = Tatsaechliche Membranlaenge / Gerade Strecke
+//   1.0 = gerade Membran, >1.0 = Zickzackmuster
 //
 // Ablauf:
 //   1. LIF-Datei oeffnen, alle Serien durchiterieren
 //   2. Kanal waehlen (einmal fuer alle Serien)
-//   3. Pro Serie: Auto-Vorauswahl von Junction-Punkten (Find Maxima)
-//   4. User kann Punkte bearbeiten (verschieben/loeschen/hinzufuegen)
+//   3. Pro Serie: User setzt Punkte paarweise auf trizellulare Junctions
 //   5. Python findet optimale Membranpfade (Dijkstra auf Ridge-Filter)
 //   6. CSV-Export aller Ergebnisse in eine Datei
 //
 // Voraussetzungen:
-//   pip install numpy scikit-image tifffile
+//   pip install numpy scikit-image
 // =============================================================================
 
 // ---- Parameter ----
 pythonCmd = "python";     // "python" oder "python3" oder voller Pfad
 
-// Find Maxima Parameter
-gaussSigma = 2;           // Glaettung vor Find Maxima
-maxNoise = 20;            // Prominenz-Schwelle fuer Find Maxima
-edgeMargin = 10;          // Punkte naeher am Rand werden ignoriert
-minPairDist = 20;         // Minimaler Abstand fuer Paarbildung (px)
-maxPairDist = 100;        // Maximaler Abstand fuer Paarbildung (px)
-targetPairs = 10;         // Anzahl gewuenschter Paare (= 20 Punkte)
 // ---- Ende Parameter ----
 
 requires("1.53");
@@ -80,11 +72,16 @@ if (nChannels > 1) {
 }
 
 // ---- CSV-Speicherort waehlen ----
-csvPath = File.saveDialog("CSV-Ergebnis speichern", "Zigzag_Results.csv");
-if (csvPath == "") exit("Kein Speicherort fuer CSV gewaehlt.");
+Dialog.create("CSV-Ergebnis speichern");
+Dialog.addDirectory("Speicherort:", getDirectory("home"));
+Dialog.addString("Dateiname:", "Zigzag_Results.csv", 30);
+Dialog.show();
+csvDir = Dialog.getString();
+csvName = Dialog.getString();
+csvPath = csvDir + csvName;
 
 // ---- Vorbereitung ----
-csvContent = "Bild,Kanal,Nr,Gerade (microns),Membran (microns),Zickzack-Index\n";
+csvContent = "Name,Kanal,Zickzack,Gerade,Index\n";
 tmpDir = getDirectory("temp");
 
 // Gesamt-Statistik
@@ -158,153 +155,19 @@ for (s = 0; s < seriesCount; s++) {
         unit = "px";
     }
 
-    // ---- Auto-Vorauswahl: Find Maxima + Paarbildung ----
+    // ---- Manuelle Punktauswahl ----
     selectImage(zo1ID);
-    imgW = getWidth();
-    imgH = getHeight();
-
-    // Bild duplizieren und glaetten fuer Find Maxima
-    run("Duplicate...", "title=[ZZ_maxima_temp]");
-    maxTempID = getImageID();
-    run("Gaussian Blur...", "sigma=" + gaussSigma);
-
-    // Find Maxima → Liste
-    run("Find Maxima...", "prominence=" + maxNoise + " output=[List]");
-
-    // Maxima aus der Results-Tabelle lesen
-    nMaxima = nResults;
-    maxX = newArray(nMaxima);
-    maxY = newArray(nMaxima);
-    maxIntensity = newArray(nMaxima);
-
-    // Intensitaeten aus dem geglaetteten Bild lesen
-    selectImage(maxTempID);
-    for (i = 0; i < nMaxima; i++) {
-        maxX[i] = getResult("X", i);
-        maxY[i] = getResult("Y", i);
-        maxIntensity[i] = getPixel(round(maxX[i]), round(maxY[i]));
-    }
-    run("Clear Results");
-
-    // Maxima-Temp schliessen
-    selectImage(maxTempID);
-    close();
-
-    // Maxima am Bildrand ausschliessen
-    filteredX = newArray(nMaxima);
-    filteredY = newArray(nMaxima);
-    filteredInt = newArray(nMaxima);
-    nFiltered = 0;
-    for (i = 0; i < nMaxima; i++) {
-        if (maxX[i] >= edgeMargin && maxX[i] < imgW - edgeMargin &&
-            maxY[i] >= edgeMargin && maxY[i] < imgH - edgeMargin) {
-            filteredX[nFiltered] = maxX[i];
-            filteredY[nFiltered] = maxY[i];
-            filteredInt[nFiltered] = maxIntensity[i];
-            nFiltered++;
-        }
-    }
-
-    // Nach Intensitaet sortieren (absteigend) — Bubble Sort
-    for (i = 0; i < nFiltered - 1; i++) {
-        for (j = 0; j < nFiltered - 1 - i; j++) {
-            if (filteredInt[j] < filteredInt[j + 1]) {
-                // Swap
-                tmpVal = filteredInt[j]; filteredInt[j] = filteredInt[j + 1]; filteredInt[j + 1] = tmpVal;
-                tmpVal = filteredX[j]; filteredX[j] = filteredX[j + 1]; filteredX[j + 1] = tmpVal;
-                tmpVal = filteredY[j]; filteredY[j] = filteredY[j + 1]; filteredY[j + 1] = tmpVal;
-            }
-        }
-    }
-
-    // ---- Paarbildung: Naechste-Nachbarn ----
-    paired = newArray(nFiltered);
-    for (i = 0; i < nFiltered; i++) paired[i] = 0;
-
-    pairX = newArray(targetPairs * 2);
-    pairY = newArray(targetPairs * 2);
-    nFoundPairs = 0;
-
-    for (i = 0; i < nFiltered && nFoundPairs < targetPairs; i++) {
-        if (paired[i]) continue;
-
-        // Naechsten unverpaarten Nachbarn suchen
-        bestJ = -1;
-        bestDist = 1e30;
-        for (j = i + 1; j < nFiltered; j++) {
-            if (paired[j]) continue;
-            dx = filteredX[i] - filteredX[j];
-            dy = filteredY[i] - filteredY[j];
-            dist = sqrt(dx * dx + dy * dy);
-            if (dist >= minPairDist && dist <= maxPairDist && dist < bestDist) {
-                bestDist = dist;
-                bestJ = j;
-            }
-        }
-
-        if (bestJ >= 0) {
-            pairX[nFoundPairs * 2] = filteredX[i];
-            pairY[nFoundPairs * 2] = filteredY[i];
-            pairX[nFoundPairs * 2 + 1] = filteredX[bestJ];
-            pairY[nFoundPairs * 2 + 1] = filteredY[bestJ];
-            paired[i] = 1;
-            paired[bestJ] = 1;
-            nFoundPairs++;
-        }
-    }
-
-    nAutoPoints = nFoundPairs * 2;
-    print("[INFO] " + nFoundPairs + " Paare automatisch gefunden.");
-
-    // ---- Vorschlag visualisieren ----
-    selectImage(zo1ID);
-    run("Remove Overlay");
-
-    if (nAutoPoints > 0) {
-        // Overlay-Linien zwischen Paaren als visuelle Hilfe
-        for (p = 0; p < nFoundPairs; p++) {
-            sx = pairX[p * 2];
-            sy = pairY[p * 2];
-            ex = pairX[p * 2 + 1];
-            ey = pairY[p * 2 + 1];
-
-            // Verbindungslinie (gelb, gestrichelt)
-            setColor(255, 255, 0);
-            Overlay.drawLine(sx, sy, ex, ey);
-            Overlay.setPosition(0);
-
-            // Paar-Nummer
-            setColor(255, 255, 0);
-            Overlay.drawString("" + (p + 1), (sx + ex) / 2 + 5, (sy + ey) / 2 - 5);
-            Overlay.setPosition(0);
-        }
-        Overlay.show();
-
-        // Multi-Point Selection erstellen
-        // Arrays auf exakte Groesse trimmen
-        selX = newArray(nAutoPoints);
-        selY = newArray(nAutoPoints);
-        for (i = 0; i < nAutoPoints; i++) {
-            selX[i] = pairX[i];
-            selY[i] = pairY[i];
-        }
-        makeSelection("point", selX, selY);
-    }
-
     setTool("multipoint");
 
-    waitForUser("Serie: " + seriesName + " — Kontakte pruefen",
-        "Automatisch " + nFoundPairs + " Paar(e) vorgeschlagen.\n\n" +
-        "Punkte pruefen und ggf. bearbeiten:\n" +
+    waitForUser("Serie: " + seriesName + " — Kontakte markieren",
+        "Punkte paarweise auf trizellulare Junctions setzen:\n" +
         "  Punkt 1 + 2 = erster Kontakt\n" +
         "  Punkt 3 + 4 = zweiter Kontakt\n" +
         "  ... usw.\n\n" +
-        "Punkte auf trizellulare Junctions setzen.\n\n" +
         "Tipps:\n" +
         "- Zoomen mit +/- oder Mausrad\n" +
         "- Punkt verschieben: Ziehen\n" +
         "- Punkt entfernen: Alt+Klick\n" +
-        "- Neuen Punkt: Klick\n" +
         "- Gerade Anzahl an Punkten!\n\n" +
         "Wenn fertig: OK druecken.");
 
@@ -474,8 +337,8 @@ for (s = 0; s < seriesCount; s++) {
 
     for (p = 0; p < nPairs; p++) {
         if (pairLength[p] <= 0) continue;
-        csvContent += "\"" + seriesName + "\"," + chosenChannel + "," + (p + 1) + "," +
-                      d2s(pairEuclid[p], 2) + "," + d2s(pairLength[p], 2) + "," +
+        csvContent += "\"" + seriesName + "\"," + chosenChannel + "," +
+                      d2s(pairLength[p], 2) + "," + d2s(pairEuclid[p], 2) + "," +
                       d2s(pairZigzag[p], 4) + "\n";
         seriesSumZZ += pairZigzag[p];
         seriesSumZZ2 += pairZigzag[p] * pairZigzag[p];
@@ -489,8 +352,9 @@ for (s = 0; s < seriesCount; s++) {
         seriesSD = 0;
     }
 
-    csvContent += "\"" + seriesName + "\"," + chosenChannel + ",Mittelwert,,," + d2s(seriesMean, 4) + "\n";
-    csvContent += "\"" + seriesName + "\"," + chosenChannel + ",Std.Abw.,,," + d2s(seriesSD, 4) + "\n";
+    csvContent += "\n";
+    csvContent += ",,Mittelwert,," + d2s(seriesMean, 4) + "\n";
+    csvContent += "\n\n";
 
     // Gesamt-Statistik aktualisieren
     totalSumZZ += seriesSumZZ;
@@ -529,9 +393,6 @@ if (totalMeasured > 0) {
         totalSD = 0;
     }
 
-    csvContent += "Gesamt,,Mittelwert,,," + d2s(totalMean, 4) + "\n";
-    csvContent += "Gesamt,,Std.Abw.,,," + d2s(totalSD, 4) + "\n";
-
     // ---- CSV schreiben ----
     File.saveString(csvContent, csvPath);
     print("================================================");
@@ -550,9 +411,11 @@ if (totalMeasured > 0) {
 print("CSV: " + csvPath);
 print("================================================");
 
-showMessage("Analyse abgeschlossen",
-    "Alle " + seriesCount + " Serien verarbeitet.\n\n" +
-    "Gesamt gemessene Kontakte: " + totalMeasured + "\n" +
-    (totalMeasured > 0 ? "Mittelwert Zigzag-Index: " + d2s(totalMean, 4) + "\n" +
-    "Standardabweichung: " + d2s(totalSD, 4) + "\n\n" : "\n") +
-    "CSV gespeichert unter:\n" + csvPath);
+summaryMsg = "Alle " + seriesCount + " Serien verarbeitet.\n\n" +
+    "Gesamt gemessene Kontakte: " + totalMeasured + "\n";
+if (totalMeasured > 0) {
+    summaryMsg += "Mittelwert Zigzag-Index: " + d2s(totalMean, 4) + "\n" +
+        "Standardabweichung: " + d2s(totalSD, 4) + "\n";
+}
+summaryMsg += "\nCSV gespeichert unter:\n" + csvPath;
+showMessage("Analyse abgeschlossen", summaryMsg);
