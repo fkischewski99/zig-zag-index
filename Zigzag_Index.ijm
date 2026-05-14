@@ -75,7 +75,7 @@ if (nChannels > 1) {
 Dialog.create("CSV-Ergebnis speichern");
 Dialog.addDirectory("Speicherort:", getDirectory("home"));
 Dialog.addString("Dateiname:", "Zigzag_Results.csv", 30);
-Dialog.addCheckbox("Kreisbogen-Referenz (statt Gerade)", false);
+Dialog.addCheckbox("Kreisbogen-Referenz (statt Gerade)", true);
 Dialog.show();
 csvDir = Dialog.getString();
 csvName = Dialog.getString();
