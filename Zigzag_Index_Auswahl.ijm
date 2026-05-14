@@ -89,18 +89,26 @@ if (nChannels > 1) {
 Dialog.create("CSV-Ergebnis speichern");
 Dialog.addDirectory("Speicherort:", getDirectory("home"));
 Dialog.addString("Dateiname:", "Zigzag_Results.csv", 30);
+Dialog.addCheckbox("Kreisbogen-Referenz (statt Gerade)", false);
 Dialog.show();
 csvDir = Dialog.getString();
 csvName = Dialog.getString();
+useArc = Dialog.getCheckbox();
 csvPath = csvDir + csvName;
 
 // ---- Vorbereitung ----
-csvContent = "Name,Kanal,Zickzack,Gerade,Index\n";
+if (useArc) {
+    csvContent = "Name,Kanal,Zickzack,Gerade,Index,Bogen,BogenIndex\n";
+} else {
+    csvContent = "Name,Kanal,Zickzack,Gerade,Index\n";
+}
 tmpDir = getDirectory("temp");
 
 // Gesamt-Statistik
 totalSumZZ = 0;
 totalSumZZ2 = 0;
+totalSumArcZZ = 0;
+totalSumArcZZ2 = 0;
 totalMeasured = 0;
 processedCount = 0;
 
@@ -223,6 +231,7 @@ for (s = 0; s < seriesCount; s++) {
     tmpCoords = tmpDir + "zz_coords.csv";
     tmpResults = tmpDir + "zz_results.csv";
     tmpPaths = tmpDir + "zz_paths.csv";
+    tmpArcPaths = tmpDir + "zz_arc_paths.csv";
 
     selectImage(zo1ID);
     run("Duplicate...", "title=[ZZ_export]");
@@ -243,6 +252,9 @@ for (s = 0; s < seriesCount; s++) {
     pyCall = pythonCmd + " \"" + scriptPath + "\" \"" + tmpImage + "\" \"" +
              tmpCoords + "\" \"" + tmpResults + "\" \"" + tmpPaths + "\" " +
              d2s(pixelWidth, 6) + " " + d2s(pixelHeight, 6);
+    if (useArc) {
+        pyCall += " circle \"" + tmpArcPaths + "\"";
+    }
 
     pyOutput = exec(pyCall);
     print("[Python] " + pyOutput);
@@ -264,6 +276,8 @@ for (s = 0; s < seriesCount; s++) {
     pairEuclid = newArray(nPairs);
     pairLength = newArray(nPairs);
     pairZigzag = newArray(nPairs);
+    pairArcLen = newArray(nPairs);
+    pairArcZigzag = newArray(nPairs);
     nMeasured = 0;
 
     for (i = 0; i < resultsLines.length; i++) {
@@ -276,6 +290,10 @@ for (s = 0; s < seriesCount; s++) {
         pairEuclid[idx] = parseFloat(cols[1]);
         pairLength[idx] = parseFloat(cols[2]);
         pairZigzag[idx] = parseFloat(cols[3]);
+        if (useArc && cols.length >= 6) {
+            pairArcLen[idx] = parseFloat(cols[4]);
+            pairArcZigzag[idx] = parseFloat(cols[5]);
+        }
         if (pairLength[idx] > 0) nMeasured++;
     }
 
@@ -287,6 +305,7 @@ for (s = 0; s < seriesCount; s++) {
         if (File.exists(tmpCoords)) File.delete(tmpCoords);
         if (File.exists(tmpResults)) File.delete(tmpResults);
         if (File.exists(tmpPaths)) File.delete(tmpPaths);
+        if (File.exists(tmpArcPaths)) File.delete(tmpArcPaths);
         continue;
     }
 
@@ -312,6 +331,28 @@ for (s = 0; s < seriesCount; s++) {
         setColor(0, 255, 0);
         Overlay.drawLine(px1, py1, px2, py2);
         Overlay.setPosition(0);
+    }
+
+    // Kreisbogen (cyan) zeichnen
+    if (useArc && File.exists(tmpArcPaths)) {
+        arcStr = File.openAsString(tmpArcPaths);
+        arcLines = split(arcStr, "\n");
+        for (i = 0; i < arcLines.length - 1; i++) {
+            if (arcLines[i] == "" || arcLines[i + 1] == "") continue;
+            ac1 = split(arcLines[i], ",");
+            ac2 = split(arcLines[i + 1], ",");
+            if (ac1.length < 3 || ac2.length < 3) continue;
+            anr1 = parseInt(ac1[0]);
+            anr2 = parseInt(ac2[0]);
+            if (anr1 != anr2) continue;
+            apx1 = parseFloat(ac1[1]);
+            apy1 = parseFloat(ac1[2]);
+            apx2 = parseFloat(ac2[1]);
+            apy2 = parseFloat(ac2[2]);
+            setColor(0, 200, 255);
+            Overlay.drawLine(apx1, apy1, apx2, apy2);
+            Overlay.setPosition(0);
+        }
     }
 
     for (p = 0; p < nPairs; p++) {
@@ -341,12 +382,23 @@ for (s = 0; s < seriesCount; s++) {
     // ---- Ergebnisse an CSV anhaengen ----
     seriesSumZZ = 0;
     seriesSumZZ2 = 0;
+    seriesSumArcZZ = 0;
+    seriesSumArcZZ2 = 0;
 
     for (p = 0; p < nPairs; p++) {
         if (pairLength[p] <= 0) continue;
-        csvContent += "\"" + seriesName + "\"," + chosenChannel + "," +
-                      d2s(pairLength[p], 2) + "," + d2s(pairEuclid[p], 2) + "," +
-                      d2s(pairZigzag[p], 4) + "\n";
+        if (useArc) {
+            csvContent += "\"" + seriesName + "\"," + chosenChannel + "," +
+                          d2s(pairLength[p], 2) + "," + d2s(pairEuclid[p], 2) + "," +
+                          d2s(pairZigzag[p], 4) + "," + d2s(pairArcLen[p], 2) + "," +
+                          d2s(pairArcZigzag[p], 4) + "\n";
+            seriesSumArcZZ += pairArcZigzag[p];
+            seriesSumArcZZ2 += pairArcZigzag[p] * pairArcZigzag[p];
+        } else {
+            csvContent += "\"" + seriesName + "\"," + chosenChannel + "," +
+                          d2s(pairLength[p], 2) + "," + d2s(pairEuclid[p], 2) + "," +
+                          d2s(pairZigzag[p], 4) + "\n";
+        }
         seriesSumZZ += pairZigzag[p];
         seriesSumZZ2 += pairZigzag[p] * pairZigzag[p];
     }
@@ -358,25 +410,46 @@ for (s = 0; s < seriesCount; s++) {
         seriesSD = 0;
     }
 
+    if (useArc) {
+        seriesArcMean = seriesSumArcZZ / nMeasured;
+        if (nMeasured > 1) {
+            seriesArcSD = sqrt((seriesSumArcZZ2 - nMeasured * seriesArcMean * seriesArcMean) / (nMeasured - 1));
+        } else {
+            seriesArcSD = 0;
+        }
+    }
+
     csvContent += "\n";
-    csvContent += ",,Mittelwert,," + d2s(seriesMean, 4) + "\n";
+    if (useArc) {
+        csvContent += ",,Mittelwert,," + d2s(seriesMean, 4) + ",," + d2s(seriesArcMean, 4) + "\n";
+    } else {
+        csvContent += ",,Mittelwert,," + d2s(seriesMean, 4) + "\n";
+    }
     csvContent += "\n\n";
 
     // Gesamt-Statistik aktualisieren
     totalSumZZ += seriesSumZZ;
     totalSumZZ2 += seriesSumZZ2;
+    totalSumArcZZ += seriesSumArcZZ;
+    totalSumArcZZ2 += seriesSumArcZZ2;
     totalMeasured += nMeasured;
 
-    print("[INFO] Serie " + seriesName + ": " + nMeasured + " Kontakte, Mittelwert=" + d2s(seriesMean, 4) + ", SD=" + d2s(seriesSD, 4));
+    if (useArc) {
+        print("[INFO] Serie " + seriesName + ": " + nMeasured + " Kontakte, MW(Euklid)=" + d2s(seriesMean, 4) + ", MW(Bogen)=" + d2s(seriesArcMean, 4));
+    } else {
+        print("[INFO] Serie " + seriesName + ": " + nMeasured + " Kontakte, Mittelwert=" + d2s(seriesMean, 4) + ", SD=" + d2s(seriesSD, 4));
+    }
 
     // ---- User Ergebnis zeigen, dann naechste Serie ----
     if (processedCount < nSelected) {
-        waitForUser("Serie " + seriesName + " fertig",
-            "Ergebnisse fuer " + seriesName + ":\n\n" +
+        seriesMsg = "Ergebnisse fuer " + seriesName + ":\n\n" +
             "Gemessene Kontakte: " + nMeasured + "\n" +
-            "Mittelwert Zigzag-Index: " + d2s(seriesMean, 4) + "\n" +
-            "Standardabweichung: " + d2s(seriesSD, 4) + "\n\n" +
-            "OK druecken fuer naechste Serie.");
+            "Zigzag-Index (Euklidisch): " + d2s(seriesMean, 4) + " +/- " + d2s(seriesSD, 4) + "\n";
+        if (useArc) {
+            seriesMsg += "Zigzag-Index (Bogen): " + d2s(seriesArcMean, 4) + " +/- " + d2s(seriesArcSD, 4) + "\n";
+        }
+        seriesMsg += "\nOK druecken fuer naechste Serie.";
+        waitForUser("Serie " + seriesName + " fertig", seriesMsg);
     }
 
     // ---- Aufraeumen ----
@@ -387,6 +460,7 @@ for (s = 0; s < seriesCount; s++) {
     if (File.exists(tmpCoords)) File.delete(tmpCoords);
     if (File.exists(tmpResults)) File.delete(tmpResults);
     if (File.exists(tmpPaths)) File.delete(tmpPaths);
+    if (File.exists(tmpArcPaths)) File.delete(tmpArcPaths);
 }
 
 // ---- CSV schreiben ----
@@ -396,6 +470,15 @@ if (totalMeasured > 0) {
         totalSD = sqrt((totalSumZZ2 - totalMeasured * totalMean * totalMean) / (totalMeasured - 1));
     } else {
         totalSD = 0;
+    }
+
+    if (useArc) {
+        totalArcMean = totalSumArcZZ / totalMeasured;
+        if (totalMeasured > 1) {
+            totalArcSD = sqrt((totalSumArcZZ2 - totalMeasured * totalArcMean * totalArcMean) / (totalMeasured - 1));
+        } else {
+            totalArcSD = 0;
+        }
     }
 
     File.saveString(csvContent, csvPath);
@@ -409,8 +492,10 @@ print("Zigzag-Index Analyse abgeschlossen");
 print("Ausgewaehlte Serien: " + nSelected + " von " + seriesCount);
 print("Gesamt gemessene Kontakte: " + totalMeasured);
 if (totalMeasured > 0) {
-    print("Gesamt Mittelwert Zigzag-Index: " + d2s(totalMean, 4));
-    print("Gesamt Standardabweichung: " + d2s(totalSD, 4));
+    print("Gesamt MW Zigzag-Index (Euklid): " + d2s(totalMean, 4) + " +/- " + d2s(totalSD, 4));
+    if (useArc) {
+        print("Gesamt MW Zigzag-Index (Bogen): " + d2s(totalArcMean, 4) + " +/- " + d2s(totalArcSD, 4));
+    }
 }
 print("CSV: " + csvPath);
 print("================================================");
@@ -418,8 +503,10 @@ print("================================================");
 summaryMsg = nSelected + " von " + seriesCount + " Serien verarbeitet.\n\n" +
     "Gesamt gemessene Kontakte: " + totalMeasured + "\n";
 if (totalMeasured > 0) {
-    summaryMsg += "Mittelwert Zigzag-Index: " + d2s(totalMean, 4) + "\n" +
-        "Standardabweichung: " + d2s(totalSD, 4) + "\n";
+    summaryMsg += "Zigzag-Index (Euklidisch): " + d2s(totalMean, 4) + " +/- " + d2s(totalSD, 4) + "\n";
+    if (useArc) {
+        summaryMsg += "Zigzag-Index (Bogen): " + d2s(totalArcMean, 4) + " +/- " + d2s(totalArcSD, 4) + "\n";
+    }
 }
 summaryMsg += "\nCSV gespeichert unter:\n" + csvPath;
 showMessage("Analyse abgeschlossen", summaryMsg);

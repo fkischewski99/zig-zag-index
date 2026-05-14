@@ -3,7 +3,10 @@ zigzag_pathfind.py
 Findet den Membranpfad zwischen Punktpaaren via Dijkstra.
 
 Aufruf:
-  python zigzag_pathfind.py <image> <coords> <results> <paths> <px_w> <px_h>
+  python zigzag_pathfind.py <image> <coords> <results> <paths> <px_w> <px_h> [circle [<arc_paths>]]
+
+  circle      - Optional: Kreisbogen-Referenz berechnen (Least-Squares Circle Fit)
+  arc_paths   - Optional: CSV-Datei fuer Kreisbogen-Overlaypunkte
 
 Abhaengigkeiten: pip install numpy scikit-image
 """
@@ -14,6 +17,54 @@ import numpy as np
 from skimage import io
 from skimage.graph import route_through_array
 from scipy.ndimage import gaussian_filter
+
+
+def fit_circle(points_cal):
+    """Least-Squares Circle Fit (Kasa-Methode).
+    points_cal: Nx2 Array kalibrierter Koordinaten.
+    Gibt (a, b, r) zurueck: Mittelpunkt und Radius."""
+    x = points_cal[:, 0]
+    y = points_cal[:, 1]
+    A = np.column_stack([x, y, np.ones(len(x))])
+    b = x**2 + y**2
+    result, _, _, _ = np.linalg.lstsq(A, b, rcond=None)
+    a_c = result[0] / 2.0
+    b_c = result[1] / 2.0
+    r = np.sqrt(result[2] + a_c**2 + b_c**2)
+    return a_c, b_c, r
+
+
+def arc_length_from_circle(r, euclid):
+    """Bogenlaenge aus Radius und Sehnenlaenge.
+    L = r * 2 * arcsin(d / (2r)). Fallback auf euclid wenn d >= 2r."""
+    ratio = euclid / (2.0 * r)
+    if ratio >= 1.0:
+        return euclid
+    return r * 2.0 * np.arcsin(ratio)
+
+
+def generate_arc_points(a, b, r, start_cal, end_cal, path_cal, n_points=100):
+    """Erzeugt Punkte entlang des Kreisbogens zwischen start und end.
+    Waehlt die Bogenseite, auf der die Pfadpunkte liegen."""
+    angle_start = np.arctan2(start_cal[1] - b, start_cal[0] - a)
+    angle_end = np.arctan2(end_cal[1] - b, end_cal[0] - a)
+
+    path_mid = path_cal[len(path_cal) // 2]
+    angle_mid = np.arctan2(path_mid[1] - b, path_mid[0] - a)
+
+    diff1 = (angle_end - angle_start) % (2 * np.pi)
+    diff2 = (angle_start - angle_end) % (2 * np.pi)
+
+    mid_in_forward = (angle_mid - angle_start) % (2 * np.pi) <= diff1
+
+    if mid_in_forward:
+        angles = np.linspace(angle_start, angle_start + diff1, n_points)
+    else:
+        angles = np.linspace(angle_start, angle_start - diff2, n_points)
+
+    xs = a + r * np.cos(angles)
+    ys = b + r * np.sin(angles)
+    return np.column_stack([xs, ys])
 
 
 def distance_to_line_segment(shape, start, end):
@@ -38,6 +89,9 @@ def main():
     paths_path = sys.argv[4]
     pixel_width = float(sys.argv[5])
     pixel_height = float(sys.argv[6])
+
+    compute_arc = len(sys.argv) > 7 and sys.argv[7] == "circle"
+    arc_paths_path = sys.argv[8] if len(sys.argv) > 8 else None
 
     # Bild laden
     img = io.imread(image_path)
@@ -74,6 +128,7 @@ def main():
     n_pairs = len(coords) // 2
     results = []
     all_paths = []
+    all_arc_paths = []
 
     for p in range(n_pairs):
         x1, y1 = coords[p * 2]
@@ -118,8 +173,40 @@ def main():
 
             zigzag = path_length / euclid if euclid > 0 else 0.0
 
-            results.append((p + 1, euclid, path_length, zigzag))
-            print(f"  Laenge={path_length:.2f}, Euklid={euclid:.2f}, ZZ={zigzag:.4f}", flush=True)
+            arc_len = 0.0
+            arc_zigzag = 0.0
+            if compute_arc and len(path) >= 4:
+                path_cal = path.astype(np.float64).copy()
+                path_cal[:, 0] *= pixel_height
+                path_cal[:, 1] *= pixel_width
+                try:
+                    a_c, b_c, r_c = fit_circle(path_cal)
+                    arc_len = float(arc_length_from_circle(r_c, euclid))
+                    arc_zigzag = path_length / arc_len if arc_len > 0 else 0.0
+
+                    start_cal = np.array([start[0] * pixel_height, start[1] * pixel_width])
+                    end_cal = np.array([end[0] * pixel_height, end[1] * pixel_width])
+                    arc_pts_cal = generate_arc_points(a_c, b_c, r_c, start_cal, end_cal, path_cal)
+                    arc_pts_px = arc_pts_cal.copy()
+                    arc_pts_px[:, 0] /= pixel_height
+                    arc_pts_px[:, 1] /= pixel_width
+                    for k in range(len(arc_pts_px)):
+                        all_arc_paths.append((p + 1, int(round(arc_pts_px[k, 1])), int(round(arc_pts_px[k, 0]))))
+                except Exception as e:
+                    print(f"  [WARNUNG] Kreisbogen-Fit fehlgeschlagen: {e}", flush=True)
+                    arc_len = euclid
+                    arc_zigzag = zigzag
+            elif compute_arc:
+                arc_len = euclid
+                arc_zigzag = zigzag
+
+            if compute_arc:
+                results.append((p + 1, euclid, path_length, zigzag, arc_len, arc_zigzag))
+                print(f"  Laenge={path_length:.2f}, Euklid={euclid:.2f}, ZZ={zigzag:.4f}"
+                      f", Bogen={arc_len:.2f}, BogenZZ={arc_zigzag:.4f}", flush=True)
+            else:
+                results.append((p + 1, euclid, path_length, zigzag))
+                print(f"  Laenge={path_length:.2f}, Euklid={euclid:.2f}, ZZ={zigzag:.4f}", flush=True)
 
             # Pfadpunkte speichern
             for k in range(len(path)):
@@ -127,7 +214,10 @@ def main():
 
         except Exception as e:
             print(f"[FEHLER] Paar {p+1}: {e}", file=sys.stderr, flush=True)
-            results.append((p + 1, 0, 0, 0))
+            if compute_arc:
+                results.append((p + 1, 0, 0, 0, 0, 0))
+            else:
+                results.append((p + 1, 0, 0, 0))
 
     with open(results_path, 'w', newline='') as f:
         for row in results:
@@ -136,6 +226,11 @@ def main():
     with open(paths_path, 'w', newline='') as f:
         for row in all_paths:
             csv.writer(f).writerow(row)
+
+    if compute_arc and arc_paths_path:
+        with open(arc_paths_path, 'w', newline='') as f:
+            for row in all_arc_paths:
+                csv.writer(f).writerow(row)
 
     print(f"OK: {n_pairs} Paare", flush=True)
 
